@@ -28,21 +28,17 @@
         ) matrix.targets;
       in
       {
-        packages = pkgs.lib.mapAttrs' (name: tc: pkgs.lib.nameValuePair name tc.cc) toolchains;
+        packages = pkgs.lib.mapAttrs' (name: tc: pkgs.lib.nameValuePair name tc.bundle) toolchains;
 
         devShells = pkgs.lib.mapAttrs (
           name: tc:
           pkgs.mkShell {
             name = "riscv-env-${name}";
             packages = [
-              tc.cc
-              tc.gdb
+              tc.bundle
             ];
             env = tc.envVars;
-            shellHook = ''
-              echo ">>> Loaded RISC-V Toolchain Shell: ${name}"
-              echo "    Arch: $RISCV_ARCH | ABI: $RISCV_ABI"
-            '';
+            shellHook = "";
           }
         ) toolchains;
       }
