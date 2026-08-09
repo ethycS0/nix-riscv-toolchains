@@ -1,3 +1,4 @@
+# pkgs/mkToolchain.nix
 {
   nixpkgs,
   system,
@@ -5,12 +6,12 @@
 }:
 
 let
-  hasTargetFlags = (targetSpec.targetCflags or "") != "";
+  hasCfiFlags = (targetSpec.targetCflags or "") != "";
 
-  cflagsOverlay = final: prev: {
-    newlib = prev.newlib.overrideAttrs (oldAttrs: {
+  cfiOverlay = final: prev: {
+    newlib = prev.newlib.overrideAttrs (old: {
       preConfigure = ''
-        ${oldAttrs.preConfigure or ""}
+        ${old.preConfigure or ""}
         export CFLAGS_FOR_TARGET="${targetSpec.targetCflags}"
       '';
     });
@@ -18,7 +19,7 @@ let
 
   crossPkgs = import nixpkgs {
     inherit system;
-    overlays = if hasTargetFlags then [ cflagsOverlay ] else [ ];
+    overlays = if hasCfiFlags then [ cfiOverlay ] else [ ];
     crossSystem = {
       config = targetSpec.config;
       libc = "newlib";
@@ -31,47 +32,36 @@ let
 
   targetTriple = targetSpec.config;
 
-  newlibNano = crossPkgs.newlib.overrideAttrs (old: {
-    pname = (old.pname or "newlib") + "-nano";
+  newlibNormal = crossPkgs.newlib;
+  newlibNanoRaw = crossPkgs.newlib.override { nanoizeNewlib = true; };
 
-    configureFlags = (old.configureFlags or [ ]) ++ [
-      "--enable-newlib-reent-small"
-      "--enable-newlib-nano-malloc"
-      "--enable-newlib-nano-formatted-io"
-      "--enable-lite-exit"
-      "--enable-newlib-global-atexit"
-      "--disable-newlib-fseek-optimization"
-      "--disable-newlib-supplied-syscalls"
-      "--disable-nls"
-    ];
+  newlibNano = crossPkgs.stdenvNoCC.mkDerivation {
+    pname = "${targetTriple}-newlib-nano-renamed";
+    version = "1";
+    dontUnpack = true;
 
-    preConfigure = ''
-      ${old.preConfigure or ""}
-      export CFLAGS_FOR_TARGET="-Os -ffunction-sections -fdata-sections ${targetSpec.targetCflags}"
-    '';
+    installPhase = ''
+      mkdir -p $out
+      cp -r ${newlibNanoRaw}/. $out/
+      chmod -R u+w $out
 
-    postInstall = ''
-      ${old.postInstall or ""}
-
-      # 1. Recursively find every .a library and create a _nano.a variant alongside it
       find $out -name "*.a" | while read -r lib; do
         dir=$(dirname "$lib")
         base=$(basename "$lib" .a)
         if [[ "$base" != *"_nano" ]]; then
-          cp "$lib" "$dir/''${base}_nano.a"
+          mv "$lib" "$dir/''${base}_nano.a"
         fi
       done
 
-      # 2. Create empty stub archives for libgloss / libnosys if omitted by --disable-newlib-supplied-syscalls
       find $out -type d -name "lib" | while read -r libdir; do
-        for stub in libgloss_nano.a libnosys_nano.a libgloss.a libnosys.a; do
+        for stub in libgloss_nano.a libnosys_nano.a; do
           if [ ! -f "$libdir/$stub" ]; then
             ${crossPkgs.buildPackages.binutils}/bin/${targetTriple}-ar rcs "$libdir/$stub"
           fi
         done
       done
     '';
-  });
+  };
 
   nanoSpecs = crossPkgs.writeTextDir "${targetTriple}/lib/nano.specs" ''
     %rename link                nano_link
@@ -90,20 +80,11 @@ let
       crossPkgs.stdenv.cc
       crossPkgs.buildPackages.binutils
       crossPkgs.buildPackages.gdb
-      crossPkgs.newlib
+      newlibNormal
       newlibNano
       nanoSpecs
     ];
   };
-in
-{
-  cc = toolchainBundle;
-  bundle = toolchainBundle;
-  gcc = crossPkgs.buildPackages.gcc;
-  gdb = crossPkgs.buildPackages.gdb;
-  binutils = crossPkgs.buildPackages.binutils;
-  newlib = crossPkgs.newlib;
-  newlibNano = newlibNano;
 
   envVars = {
     CROSS_COMPILE = "${targetSpec.config}-";
@@ -112,12 +93,21 @@ in
     NIX_CFLAGS_COMPILE = "-B${toolchainBundle}/${targetTriple}/lib";
     NIX_LDFLAGS = "-L${toolchainBundle}/${targetTriple}/lib";
   }
-  // (
-    if hasTargetFlags then
-      {
-        CFLAGS = targetSpec.targetCflags;
-      }
-    else
-      { }
-  );
+  // (if hasCfiFlags then { CFLAGS = targetSpec.targetCflags; } else { });
+
+  toolchainBundleWithEnv = toolchainBundle.overrideAttrs (old: {
+    passthru = (old.passthru or { }) // {
+      inherit envVars;
+    };
+  });
+in
+{
+  cc = toolchainBundleWithEnv;
+  bundle = toolchainBundleWithEnv;
+  gcc = crossPkgs.buildPackages.gcc;
+  gdb = crossPkgs.buildPackages.gdb;
+  binutils = crossPkgs.buildPackages.binutils;
+  newlib = newlibNormal;
+  newlibNano = newlibNano;
+  envVars = envVars;
 }
