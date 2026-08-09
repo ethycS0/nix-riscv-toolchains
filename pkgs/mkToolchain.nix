@@ -2,24 +2,57 @@
 {
   nixpkgs,
   system,
-  targetSpec,
+  targetSpec ? null,
+  arch ? null,
+  abi ? null,
+  config ? null,
+  cfi ? false,
+  targetCflags ? "",
 }:
 
 let
-  targetTriple = targetSpec.config;
-  hasCfiFlags = (targetSpec.targetCflags or "") != "";
+  resolvedSpec =
+    if targetSpec != null then
+      targetSpec
+    else
+      let
+        safeArch = if arch != null then arch else "";
+        is64 = (builtins.match ".*64.*" safeArch) != null;
+        defaultConfig = if is64 then "riscv64-none-elf" else "riscv32-none-elf";
+        defaultAbi = if is64 then "lp64d" else "ilp32";
+        cfiArch =
+          if cfi && (builtins.match ".*zicfilp.*" safeArch == null) then
+            "${safeArch}_zicfilp_zicfiss"
+          else
+            safeArch;
+        cfiFlags = if cfi then "-O2 -fcf-protection=full ${targetCflags}" else targetCflags;
+      in
 
-  standardCflags = "-O2 -ffunction-sections -fdata-sections -fomit-frame-pointer ${targetSpec.targetCflags or ""}";
-  nanoCflags = "-Os -ffunction-sections -fdata-sections -fomit-frame-pointer ${targetSpec.targetCflags or ""}";
+      {
+        arch = cfiArch;
+        abi = if abi != null then abi else defaultAbi;
+        config = if config != null then config else defaultConfig;
+        targetCflags = cfiFlags;
+      };
+
+  targetTriple = resolvedSpec.config;
+  hasCfiFlags = (resolvedSpec.targetCflags or "") != "";
+
+  standardCflags = "-O2 -ffunction-sections -fdata-sections -fomit-frame-pointer ${
+    resolvedSpec.targetCflags or ""
+  }";
+  nanoCflags = "-Os -ffunction-sections -fdata-sections -fomit-frame-pointer ${
+    resolvedSpec.targetCflags or ""
+  }";
 
   crossPkgs = import nixpkgs {
     inherit system;
     crossSystem = {
-      config = targetSpec.config;
+      config = resolvedSpec.config;
       libc = "newlib";
       gcc = {
-        arch = targetSpec.arch;
-        abi = targetSpec.abi;
+        arch = resolvedSpec.arch;
+        abi = resolvedSpec.abi;
       };
     };
   };
@@ -133,7 +166,7 @@ let
   '';
 
   toolchainBundle = crossPkgs.symlinkJoin {
-    name = "${targetTriple}-${targetSpec.arch}-toolchain-bundle";
+    name = "${targetTriple}-${resolvedSpec.arch}-toolchain-bundle";
     paths = [
       cleanCc
       crossPkgs.buildPackages.binutils
@@ -145,14 +178,14 @@ let
   };
 
   envVars = {
-    CROSS_COMPILE = "${targetSpec.config}-";
-    RISCV_ARCH = targetSpec.arch;
-    RISCV_ABI = targetSpec.abi;
+    CROSS_COMPILE = "${resolvedSpec.config}-";
+    RISCV_ARCH = resolvedSpec.arch;
+    RISCV_ABI = resolvedSpec.abi;
+    TARGET_CFLAGS = resolvedSpec.targetCflags or "";
     NIX_CFLAGS_COMPILE = "-B${toolchainBundle}/${targetTriple}/lib";
     NIX_LDFLAGS = "-L${toolchainBundle}/${targetTriple}/lib";
     NIX_HARDENING_ENABLE = "0";
-  }
-  // (if hasCfiFlags then { CFLAGS = targetSpec.targetCflags; } else { });
+  };
 
   toolchainBundleWithEnv = toolchainBundle.overrideAttrs (old: {
     passthru = (old.passthru or { }) // {

@@ -13,34 +13,50 @@
       flake-utils,
       ...
     }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-        matrix = import ./lib/target-matrix.nix;
+    let
+      matrix = import ./lib/target-matrix.nix;
+      mkToolchain = args: import ./pkgs/mkToolchain.nix args;
+    in
+    {
+      lib = {
+        inherit mkToolchain;
+        targetMatrix = matrix;
+      };
+    }
+    //
+      flake-utils.lib.eachSystem
+        [
+          "x86_64-linux"
+          "aarch64-linux"
+          "aarch64-darwin"
+        ]
+        (
+          system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
 
-        toolchains = pkgs.lib.mapAttrs (
-          name: spec:
-          import ./pkgs/mkToolchain.nix {
-            inherit nixpkgs system;
-            targetSpec = spec;
-          }
-        ) matrix.targets;
-      in
-      {
-        packages = pkgs.lib.mapAttrs' (name: tc: pkgs.lib.nameValuePair name tc.bundle) toolchains;
+            toolchains = pkgs.lib.mapAttrs (
+              name: spec:
+              mkToolchain {
+                inherit nixpkgs system;
+                targetSpec = spec;
+              }
+            ) matrix.targets;
+          in
+          {
+            packages = pkgs.lib.mapAttrs' (name: tc: pkgs.lib.nameValuePair name tc.bundle) toolchains;
 
-        devShells = pkgs.lib.mapAttrs (
-          name: tc:
-          pkgs.mkShell {
-            name = "riscv-env-${name}";
-            packages = [
-              tc.bundle
-            ];
-            env = tc.envVars;
-            shellHook = "";
+            devShells = pkgs.lib.mapAttrs (
+              name: tc:
+              pkgs.mkShell {
+                name = "riscv-env-${name}";
+                packages = [
+                  tc.bundle
+                ];
+                env = tc.envVars;
+                shellHook = "";
+              }
+            ) toolchains;
           }
-        ) toolchains;
-      }
-    );
+        );
 }
