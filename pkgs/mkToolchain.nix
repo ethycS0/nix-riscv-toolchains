@@ -6,20 +6,14 @@
 }:
 
 let
+  targetTriple = targetSpec.config;
   hasCfiFlags = (targetSpec.targetCflags or "") != "";
 
-  cfiOverlay = final: prev: {
-    newlib = prev.newlib.overrideAttrs (old: {
-      preConfigure = ''
-        ${old.preConfigure or ""}
-        export CFLAGS_FOR_TARGET="${targetSpec.targetCflags}"
-      '';
-    });
-  };
+  standardCflags = "-O2 -ffunction-sections -fdata-sections -fomit-frame-pointer ${targetSpec.targetCflags or ""}";
+  nanoCflags = "-Os -ffunction-sections -fdata-sections -fomit-frame-pointer ${targetSpec.targetCflags or ""}";
 
   crossPkgs = import nixpkgs {
     inherit system;
-    overlays = if hasCfiFlags then [ cfiOverlay ] else [ ];
     crossSystem = {
       config = targetSpec.config;
       libc = "newlib";
@@ -30,59 +24,123 @@ let
     };
   };
 
-  targetTriple = targetSpec.config;
+  gccCc = crossPkgs.stdenv.cc.cc;
+  gccVersion = gccCc.version;
 
-  newlibNormal = crossPkgs.newlib;
-  newlibNanoRaw = crossPkgs.newlib.override { nanoizeNewlib = true; };
+  # Standard Newlib (-O2)
+  newlibNormal = crossPkgs.newlib.overrideAttrs (old: {
+    preConfigure = ''
+      ${old.preConfigure or ""}
+      export CFLAGS_FOR_TARGET="${standardCflags}"
+    '';
+    postInstall = ''
+      ${old.postInstall or ""}
+      rm -f $out/${targetTriple}/lib/nano.specs
+    '';
+  });
 
+  # Nano Newlib build (-Os)
+  newlibNanoRaw = (crossPkgs.newlib.override { nanoizeNewlib = true; }).overrideAttrs (old: {
+    preConfigure = ''
+      ${old.preConfigure or ""}
+      export CFLAGS_FOR_TARGET="${nanoCflags}"
+    '';
+    postInstall = ''
+      ${old.postInstall or ""}
+      rm -f $out/${targetTriple}/lib/nano.specs
+    '';
+  });
+
+  # Processed Newlib Nano derivation
   newlibNano = crossPkgs.stdenvNoCC.mkDerivation {
-    pname = "${targetTriple}-newlib-nano-renamed";
+    pname = "${targetTriple}-newlib-nano-processed";
     version = "1";
     dontUnpack = true;
 
     installPhase = ''
-      mkdir -p $out
-      cp -r ${newlibNanoRaw}/. $out/
-      chmod -R u+w $out
+      mkdir -p $out/${targetTriple}/lib/newlib-nano
+      mkdir -p $out/${targetTriple}/lib
+      mkdir -p $out/${targetTriple}/include/newlib-nano
 
-      find $out -name "*.a" | while read -r lib; do
-        dir=$(dirname "$lib")
-        base=$(basename "$lib" .a)
-        if [[ "$base" != *"_nano" ]]; then
-          mv "$lib" "$dir/''${base}_nano.a"
+      # Copy all headers from newlibNanoRaw
+      find ${newlibNanoRaw} -type f -name "*.h" | while read -r header; do
+        rel=$(echo "$header" | sed -n 's|.*/include/||p')
+        if [ -n "$rel" ]; then
+          mkdir -p "$out/${targetTriple}/include/newlib-nano/$(dirname "$rel")"
+          cp "$header" "$out/${targetTriple}/include/newlib-nano/$rel"
+        else
+          cp "$header" "$out/${targetTriple}/include/newlib-nano/"
         fi
       done
 
-      find $out -type d -name "lib" | while read -r libdir; do
-        for stub in libgloss_nano.a libnosys_nano.a; do
-          if [ ! -f "$libdir/$stub" ]; then
-            ${crossPkgs.buildPackages.binutils}/bin/${targetTriple}-ar rcs "$libdir/$stub"
-          fi
-        done
+      # Copy all static libraries from newlibNanoRaw
+      find ${newlibNanoRaw} -type f -name "*.a" | while read -r libfile; do
+        cp -L "$libfile" $out/${targetTriple}/lib/newlib-nano/
+      done
+
+      chmod -R u+w $out
+
+      # Create _nano.a aliases inside newlib-nano directory
+      cd $out/${targetTriple}/lib/newlib-nano
+      for lib in *.a; do
+        [ -f "$lib" ] || continue
+        base=$(basename "$lib" .a)
+        if [[ "$base" != *"_nano" ]]; then
+          cp "$lib" "''${base}_nano.a"
+        fi
+      done
+
+      # Mirror libraries to main lib directory for path compatibility
+      cp -r * $out/${targetTriple}/lib/
+
+      # Provide stubs for gloss and nosys if omitted
+      for stub in libgloss.a libgloss_nano.a libnosys.a libnosys_nano.a; do
+        if [ ! -f "$out/${targetTriple}/lib/newlib-nano/$stub" ]; then
+          ${crossPkgs.buildPackages.binutils}/bin/${targetTriple}-ar rcs "$out/${targetTriple}/lib/newlib-nano/$stub"
+          cp "$out/${targetTriple}/lib/newlib-nano/$stub" "$out/${targetTriple}/lib/$stub"
+        fi
       done
     '';
   };
 
+  # Clean GCC wrapper (strips frame-pointer flags, directs libc flags to newlibNormal)
+  cleanCc = crossPkgs.stdenv.cc.overrideAttrs (old: {
+    postFixup = (old.postFixup or "") + ''
+      find $out/nix-support -type f -exec sed -i "s|${crossPkgs.newlib}|${newlibNormal}|g" {} +
+      if [ -f $out/nix-support/libc-crt1-cflags ]; then
+        echo "-B${nanoSpecs}/${targetTriple}/lib" >> $out/nix-support/libc-crt1-cflags
+      fi
+      if [ -f $out/nix-support/cc-cflags-before ]; then
+        sed -i 's/-fno-omit-frame-pointer//g; s/-mno-omit-leaf-frame-pointer//g' $out/nix-support/cc-cflags-before
+      fi
+    '';
+  });
+
+  # nano.specs using -nostdinc to neutralize Nix wrapper header pollution
   nanoSpecs = crossPkgs.writeTextDir "${targetTriple}/lib/nano.specs" ''
-    %rename link                nano_link
     %rename cpp                 nano_cpp
+    %rename link                nano_link
+    %rename lib                 nano_lib
 
     *cpp:
-    %(nano_cpp) -D_REENT_SMALL
+    -nostdinc -isystem ${newlibNano}/${targetTriple}/include/newlib-nano -isystem ${newlibNormal}/${targetTriple}/include -isystem ${gccCc}/lib/gcc/${targetTriple}/${gccVersion}/include -isystem ${gccCc}/lib/gcc/${targetTriple}/${gccVersion}/include-fixed %(nano_cpp) -D_REENT_SMALL -D_LITE_EXIT
 
     *link:
-    %(nano_link) -lc_nano -lm_nano -lgloss_nano -lnosys_nano
+    %(nano_link) -L${newlibNano}/${targetTriple}/lib/newlib-nano -L${newlibNormal}/${targetTriple}/lib %:replace-outfile(-lc -lc_nano) %:replace-outfile(-lg -lg_nano) %:replace-outfile(-lm -lm_nano) --gc-sections
+
+    *lib:
+    %{!shared:%{g*:-lg_nano} %{!g*:-lc_nano}}
   '';
 
   toolchainBundle = crossPkgs.symlinkJoin {
     name = "${targetTriple}-${targetSpec.arch}-toolchain-bundle";
     paths = [
-      crossPkgs.stdenv.cc
+      cleanCc
       crossPkgs.buildPackages.binutils
       crossPkgs.buildPackages.gdb
-      newlibNormal
-      newlibNano
       nanoSpecs
+      newlibNano
+      newlibNormal
     ];
   };
 
@@ -92,6 +150,7 @@ let
     RISCV_ABI = targetSpec.abi;
     NIX_CFLAGS_COMPILE = "-B${toolchainBundle}/${targetTriple}/lib";
     NIX_LDFLAGS = "-L${toolchainBundle}/${targetTriple}/lib";
+    NIX_HARDENING_ENABLE = "0";
   }
   // (if hasCfiFlags then { CFLAGS = targetSpec.targetCflags; } else { });
 
