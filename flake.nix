@@ -1,5 +1,5 @@
 {
-  description = "Centralized RISC-V Cross-Compilation Toolchains";
+  description = "nix-cfi-riscv-toolchains";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -13,50 +13,42 @@
       flake-utils,
       ...
     }:
-    let
-      matrix = import ./lib/target-matrix.nix;
-      mkToolchain = args: import ./pkgs/mkToolchain.nix args;
-    in
-    {
-      lib = {
-        inherit mkToolchain;
-        targetMatrix = matrix;
-      };
-    }
-    //
-      flake-utils.lib.eachSystem
-        [
-          "x86_64-linux"
-          "aarch64-linux"
-          "aarch64-darwin"
-        ]
-        (
-          system:
-          let
-            pkgs = nixpkgs.legacyPackages.${system};
+    flake-utils.lib.eachSystem
+      [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ]
+      (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
 
-            toolchains = pkgs.lib.mapAttrs (
-              name: spec:
-              mkToolchain {
-                inherit nixpkgs system;
-                targetSpec = spec;
-              }
-            ) matrix.targets;
-          in
-          {
-            packages = pkgs.lib.mapAttrs' (name: tc: pkgs.lib.nameValuePair name tc.bundle) toolchains;
+          escvToolchain = import ./pkgs/escv-toolchain.nix { inherit nixpkgs system; };
+          universalToolchain = import ./pkgs/universal-toolchain.nix { inherit nixpkgs system; };
+        in
+        {
+          packages = {
+            escv = escvToolchain.bundle;
+            universal = universalToolchain.bundle;
+            default = escvToolchain.bundle;
+          };
 
-            devShells = pkgs.lib.mapAttrs (
-              name: tc:
-              pkgs.mkShell {
-                name = "riscv-env-${name}";
-                packages = [
-                  tc.bundle
-                ];
-                env = tc.envVars;
-                shellHook = "";
-              }
-            ) toolchains;
-          }
-        );
+          devShells = {
+            escv = pkgs.mkShell {
+              name = "riscv-escv-shell";
+              packages = [ escvToolchain.bundle ];
+              env = escvToolchain.envVars;
+            };
+
+            universal = pkgs.mkShell {
+              name = "riscv-universal-shell";
+              packages = [ universalToolchain.bundle ];
+              env = universalToolchain.envVars;
+            };
+
+            default = self.devShells.${system}.escv;
+          };
+        }
+      );
 }

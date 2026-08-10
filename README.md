@@ -1,71 +1,84 @@
-# nix-riscv-toolchains
+# nix-cfi-riscv-toolchains
 
-A centralized Nix Flake repository providing reproducible, pre-configured bare-metal RISC-V cross-compilation toolchains.
+A centralized Nix Flake repository providing reproducible RISC-V cross-compilation toolchains with **Hardware Control-Flow Integrity (CFI)** (`Zicfilp` + `Zicfiss`).
 
-This repository acts as a single source of truth for both **standard** RISC-V architectures and **Control-Flow Integrity (CFI)** hardened targets (`Zicfilp` + `Zicfiss`), optimized for bare-metal processors (like `eSC-V`), RTOS development (Zephyr), and test suites (`riscv-arch-tests`).
+This repository provides two dedicated toolchains to cover all bare-metal and open-source contribution needs without unnecessary build matrix bloat:
 
----
-
-## Features
-
-- **Pre-configured Target Matrix**: Instant access to bare-metal (32-bit `ilp32`) and 64-bit (`lp64d`) cross-compilers.
-- **Hardware-Enforced CFI Support**: CFI targets build **Newlib (`libc.a`, `crt0.o`)** directly with `-fcf-protection=full`, ensuring standard library functions include landing pads (`lpad`).
-- **Programmable Builder API (`lib.mkToolchain`)**: Instantiate custom toolchains on the fly in downstream projects without duplicating flake logic.
-- **Cachix-Friendly**: Shared `/nix/store` closure per toolchain across local projects and CI runners.
+1. **`escv`**: A dedicated single-target (`riscv32-none-elf`) bare-metal toolchain for the `eSC-V` core. Uses Nano Newlib exclusively, ensuring zero `M`, `A`, or `C` instructions contaminate `eSC-V` binaries.
+2. **`universal`**: A universal 64-bit multilib toolchain (`riscv64-none-elf` with `--enable-multilib`). Builds standard Newlib with CFI for 32-bit and 64-bit soft-float and hard-float ABIs (`ilp32`, `ilp32d`, `lp64`, `lp64d`). Ideal for Zephyr RTOS, `riscv-arch-tests`, and open-source contributions.
 
 ---
 
-## Pre-configured Target Matrix
+## Toolchains
 
-| Target Name             | Architecture (`-march`)          | ABI (`-mabi`) | Cross Config       | Primary Use Case                       |
-| :---------------------- | :------------------------------- | :------------ | :----------------- | :------------------------------------- |
-| **`rv32i-zicsr`**       | `rv32i_zicsr`                    | `ilp32`       | `riscv32-none-elf` | `eSC-V` baseline bare-metal            |
-| **`rv32i-cfi`**         | `rv32i_zicsr_zicfilp_zicfiss`    | `ilp32`       | `riscv32-none-elf` | `eSC-V` bare-metal with CFI            |
-| **`rv32imac-standard`** | `rv32imac_zicsr`                 | `ilp32`       | `riscv32-none-elf` | Zephyr RTOS / soft-float 32-bit cores  |
-| **`rv32imac-cfi`**      | `rv32imac_zicsr_zicfilp_zicfiss` | `ilp32`       | `riscv32-none-elf` | Zephyr RTOS with CFI (soft-float)      |
-| **`rv64g-standard`**    | `rv64g`                          | `lp64d`       | `riscv64-none-elf` | 64-bit application processors          |
-| **`rv64g-cfi`**         | `rv64g_zicfilp_zicfiss`          | `lp64d`       | `riscv64-none-elf` | 64-bit application processors with CFI |
+| Toolchain Name  | Architecture (`-march`)       | ABI (`-mabi`) | Multilib    | Newlib Variant         | Primary Target                                             |
+| :-------------- | :---------------------------- | :------------ | :---------- | :--------------------- | :--------------------------------------------------------- |
+| **`escv`**      | `rv32i_zicsr_zicfilp_zicfiss` | `ilp32`       | Disabled    | Nano (`nanoizeNewlib`) | `eSC-V` 5-Stage Core (Pure Base Integer + CFI)             |
+| **`universal`** | `rv64g_zicfilp_zicfiss`       | `lp64d`       | **Enabled** | Standard               | Zephyr RTOS, `riscv-arch-tests`, Newlib, 32/64-bit targets |
 
 ---
 
-## Quick Start & Local Testing
+## Quick Start & Usage
 
-### 1. Enter a Target Environment
+### 1. Enter a Development Shell
 
 ```bash
-# Enter shell for 32-bit RTOS target with CFI
-nix develop .#rv32imac-cfi
+# Enter shell for eSC-V bare-metal development
+nix develop .#escv
 
-# Or for 32-bit eSC-V standard I + Zicsr
-nix develop .#rv32i-zicsr
+# Enter shell for Zephyr RTOS / Universal Multilib development
+nix develop .#universal
 ```
 
 ---
 
-## Downstream Usage (`lib.mkToolchain`)
+## Downstream Flake Integration
 
-You can import `nix-riscv-toolchains` as a flake input and generate custom targets dynamically:
+### Using `escv` for eSC-V Bare-metal Projects
 
 ```nix
 {
   inputs = {
-    nix-riscv-toolchains.url = "github:ethycS0/nix-riscv-toolchains";
-    nixpkgs.follows = "nix-riscv-toolchains/nixpkgs";
+    nix-cfi-riscv-toolchains.url = "github:ethycS0/nix-riscv-toolchains";
   };
 
-  outputs = { self, nixpkgs, nix-riscv-toolchains }:
+  outputs = { self, nixpkgs, nix-cfi-riscv-toolchains }:
     let
       system = "x86_64-linux";
-      tc = nix-riscv-toolchains.lib.mkToolchain {
-        inherit nixpkgs system;
-        arch = "rv32im_zicsr";
-        abi = "ilp32";
-        cfi = true; # Automatically builds Newlib with -fcf-protection=full and adds zicfilp/zicfiss
-      };
+      escv = nix-cfi-riscv-toolchains.packages.${system}.escv;
     in {
       devShells.${system}.default = nixpkgs.legacyPackages.${system}.mkShell {
-        packages = [ tc.bundle ];
-        env = tc.envVars;
+        packages = [ escv ];
+        env = escv.envVars;
+      };
+    };
+}
+```
+
+### Using `universal` for Zephyr RTOS
+
+```nix
+{
+  inputs = {
+    nix-cfi-riscv-toolchains.url = "github:ethycS0/nix-riscv-toolchains";
+  };
+
+  outputs = { self, nixpkgs, nix-cfi-riscv-toolchains }:
+    let
+      system = "x86_64-linux";
+      tc = nix-cfi-riscv-toolchains.packages.${system}.universal;
+    in {
+      devShells.${system}.default = nixpkgs.legacyPackages.${system}.mkShell {
+        packages = [
+          tc
+          nixpkgs.legacyPackages.${system}.python3Packages.west
+          nixpkgs.legacyPackages.${system}.cmake
+          nixpkgs.legacyPackages.${system}.ninja
+          nixpkgs.legacyPackages.${system}.dtc
+        ];
+        env = tc.envVars // {
+          ZEPHYR_TOOLCHAIN_VARIANT = "cross-compile";
+        };
       };
     };
 }
