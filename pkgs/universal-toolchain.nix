@@ -1,6 +1,4 @@
 # pkgs/universal-toolchain.nix
-# Universal 64-bit multilib toolchain with Hardware CFI (Zicfilp + Zicfiss)
-# Covers Zephyr RTOS, riscv-arch-tests, and general RISC-V open-source contributions.
 
 { nixpkgs, system }:
 
@@ -51,9 +49,6 @@ let
     RISCV_ARCH = targetArch;
     RISCV_ABI = targetAbi;
     TARGET_CFLAGS = targetCflags;
-    NIX_CFLAGS_COMPILE = "-B${toolchainBundle}/${targetTriple}/lib";
-    NIX_LDFLAGS = "-L${toolchainBundle}/${targetTriple}/lib";
-    NIX_HARDENING_ENABLE = "0";
   };
 in
 {
