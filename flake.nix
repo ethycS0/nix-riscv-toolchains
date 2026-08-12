@@ -25,12 +25,12 @@
           pkgs = nixpkgs.legacyPackages.${system};
 
           escvToolchain = import ./pkgs/escv-toolchain.nix { inherit nixpkgs system; };
-          universalToolchain = import ./pkgs/universal-toolchain.nix { inherit nixpkgs system; };
+          newlibToolchain = import ./pkgs/universal-newlib.nix { inherit nixpkgs system; };
         in
         {
           packages = {
             escv = escvToolchain.bundle;
-            universal = universalToolchain.bundle;
+            universal-newlib = newlibToolchain.bundle;
             default = escvToolchain.bundle;
           };
 
@@ -41,10 +41,10 @@
               env = escvToolchain.envVars;
             };
 
-            universal = pkgs.mkShell {
+            universal-newlib = pkgs.mkShell {
               name = "riscv-universal-shell";
-              packages = [ universalToolchain.bundle ];
-              env = universalToolchain.envVars;
+              packages = [ newlibToolchain.bundle ];
+              env = newlibToolchain.envVars;
             };
 
             default = self.devShells.${system}.escv;
