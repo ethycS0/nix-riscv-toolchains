@@ -3,10 +3,29 @@
 { nixpkgs, system }:
 
 let
+  lib = nixpkgs.lib;
   targetTriple = "riscv64-none-elf";
-  targetArch = "rv64g_zicfilp_zicfiss";
-  targetAbi = "lp64d";
-  targetCflags = "-O2 -ffunction-sections -fdata-sections -fomit-frame-pointer -fcf-protection=full";
+
+  multilibs = [
+    {
+      arch = "rv32i_zicsr_zicfilp_zicfiss";
+      abi = "ilp32";
+    }
+    {
+      arch = "rv32imac_zicsr_zifencei_zicfilp_zicfiss";
+      abi = "ilp32";
+    }
+    {
+      arch = "rv64imac_zicsr_zifencei_zicfilp_zicfiss";
+      abi = "lp64";
+    }
+    {
+      arch = "rv64g_zicfilp_zicfiss";
+      abi = "lp64d";
+    }
+  ];
+
+  multilibGeneratorList = nixpkgs.lib.concatMapStringsSep ";" (m: "${m.arch}-${m.abi}--") multilibs;
 
   crossPkgs = import nixpkgs {
     inherit system;
@@ -15,16 +34,34 @@ let
       libc = "newlib";
       multilib = true;
       gcc = {
-        arch = targetArch;
-        abi = targetAbi;
+        arch = "rv64imac_zicfilp_zicfiss";
+        abi = "lp64";
       };
     };
+    overlays = [
+      (self: super: {
+        gcc-unwrapped = super.gcc-unwrapped.overrideAttrs (
+          old:
+          let
+            targetConfig = self.stdenv.targetPlatform.config or self.stdenv.hostPlatform.config;
+            isRiscvCrossTarget = targetConfig == targetTriple;
+          in
+          lib.optionalAttrs isRiscvCrossTarget {
+            configureFlags = (old.configureFlags or [ ]) ++ [
+              "--enable-multilib"
+              "--with-multilib-generator=${multilibGeneratorList}"
+            ];
+          }
+        );
+      })
+    ];
   };
 
   newlibNormal = crossPkgs.newlib.overrideAttrs (old: {
+    configureFlags = (old.configureFlags or [ ]) ++ [ "--enable-multilib" ];
     preConfigure = ''
       ${old.preConfigure or ""}
-      export CFLAGS_FOR_TARGET="${targetCflags}"
+      export CFLAGS_FOR_TARGET="-O2 -ffunction-sections -fdata-sections -fomit-frame-pointer"
     '';
   });
 
@@ -43,13 +80,6 @@ let
       newlibNormal
     ];
   };
-
-  envVars = {
-    CROSS_COMPILE = "${targetTriple}-";
-    RISCV_ARCH = targetArch;
-    RISCV_ABI = targetAbi;
-    TARGET_CFLAGS = targetCflags;
-  };
 in
 {
   cc = toolchainBundle;
@@ -58,5 +88,7 @@ in
   gdb = crossPkgs.buildPackages.gdb;
   binutils = crossPkgs.buildPackages.binutils;
   newlib = newlibNormal;
-  envVars = envVars;
+  envVars = {
+    CROSS_COMPILE = "${targetTriple}-";
+  };
 }
