@@ -15,12 +15,14 @@ let
   lib = crossPkgs.lib;
 
   multilibs = [
+    # Zephyr Zicfilp patchn
     {
-      arch = "rv32imac_zicfilp_zicfiss";
+      arch = "rv32imac_zicsr_zifencei_zicfilp";
       abi = "ilp32";
     }
+    # riscv-arch-tests dev
     {
-      arch = "rv64imac_zicfilp_zicfiss";
+      arch = "rv64imac_zicsr_zicfilp_zicfiss";
       abi = "lp64";
     }
   ];
